@@ -5,7 +5,7 @@ Thank you for your interest in contributing!
 ## Getting Started
 
 ```bash
-git clone https://github.com/[username]/samsin-saju.git
+git clone https://github.com/ohamma8253/samsin-saju.git
 cd samsin-saju
 npm install
 cp env.example .env.local   # add your OPENROUTER_API_KEY
