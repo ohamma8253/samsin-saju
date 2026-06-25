@@ -1,7 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateCompatibility } from '@/lib/claude';
+import type { CompatibilityReport } from '@/lib/claude';
+import { generateRuleBasedCompatibility } from '@/lib/compatibility';
 import { getSession } from '@/lib/session';
 import { BirthParamsSchema } from '@/lib/schema';
+import { auditPlainOracleTextSafety } from '@/lib/interpretation';
+
+function collectCompatibilityText(report: CompatibilityReport): string[] {
+  return [
+    report.ohaengRelation,
+    report.summary,
+    report.light.gijil.headline,
+    report.light.gijil.body,
+    report.light.sothrough.headline,
+    report.light.sothrough.body,
+    report.light.strength.headline,
+    report.light.strength.body,
+    report.light.samsinMessage,
+    report.deep?.emotion.headline ?? '',
+    report.deep?.emotion.body ?? '',
+    report.deep?.longterm.headline ?? '',
+    report.deep?.longterm.body ?? '',
+    report.deep?.sokgungham.headline ?? '',
+    report.deep?.sokgungham.body ?? '',
+    report.deep?.bestTime ?? '',
+  ].filter(Boolean);
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -19,10 +42,27 @@ export async function POST(req: NextRequest) {
       getSession(parsedB.data),
     ]);
 
-    const report = await generateCompatibility(dataA, dataB, relationship ?? 'friend', includeDeep ?? false);
+    const report = generateRuleBasedCompatibility(
+      dataA,
+      dataB,
+      relationship === 'romantic' ? 'romantic' : 'friend',
+      includeDeep ?? false,
+    );
+    const safetyAudit = auditPlainOracleTextSafety(collectCompatibilityText(report).join('\n'));
+    if (!safetyAudit.passed) {
+      return NextResponse.json(
+        { error: '궁합 내용의 안전 기준을 확인하지 못했어요. 표현을 더 조심스럽게 바꾼 뒤 다시 시도해주세요.' },
+        { status: 422 },
+      );
+    }
 
     return NextResponse.json({
       report,
+      safetyAudit: {
+        passed: safetyAudit.passed,
+        checkedClaimCount: safetyAudit.checkedClaimCount,
+        issues: safetyAudit.issues.map(item => ({ code: item.code, detail: item.detail })),
+      },
       meta: {
         nameA: parsedA.data.name,
         nameB: parsedB.data.name,

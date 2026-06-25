@@ -1,6 +1,7 @@
 import type { SamsinData } from './saju';
 import type { ComputedScores, ScoredPeriod } from './scoring';
 import type { GraphPeriod } from './claude';
+import type { BirthTimePrecision } from './interpretation/evidence';
 
 interface CachedSession {
   data: SamsinData;
@@ -13,8 +14,21 @@ const MAX_SESSIONS = 200;
 const cache = new Map<string, CachedSession>();
 
 function makeKey(p: { name: string; year: number; month: number; day: number;
-                      hour: number; minute: number; gender: string; city?: string }): string {
-  return `${p.name}|${p.year}|${p.month}|${p.day}|${p.hour}|${p.minute}|${p.gender}|${p.city ?? 'seoul'}`;
+                      hour: number; minute: number; gender: string; city?: string;
+                      unknownTime?: boolean; birthTimePrecision?: BirthTimePrecision; analysisYear?: number }): string {
+  return [
+    p.name,
+    p.year,
+    p.month,
+    p.day,
+    p.hour,
+    p.minute,
+    p.gender,
+    p.city ?? 'seoul',
+    p.unknownTime ? 'unknown-time' : 'known-time',
+    p.birthTimePrecision ?? 'range',
+    p.analysisYear ?? new Date().getFullYear(),
+  ].join('|');
 }
 
 function evict(): void {
@@ -31,6 +45,7 @@ function evict(): void {
 export async function getSession(params: {
   name: string; year: number; month: number; day: number;
   hour: number; minute: number; gender: 'M' | 'F'; city?: string;
+  unknownTime?: boolean; birthTimePrecision?: BirthTimePrecision; analysisYear?: number;
 }): Promise<{ data: SamsinData; scores: ComputedScores }> {
   const key = makeKey(params);
   const existing = cache.get(key);

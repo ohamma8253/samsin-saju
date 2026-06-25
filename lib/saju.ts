@@ -1,4 +1,15 @@
-import type { BirthInput, SajuResult, ZiweiChart, NatalChart, Element, LiuNianInfo } from '@orrery/core';
+import type { BirthTimePrecision } from './interpretation/evidence';
+import { normalizeBirthInput, type CalculationSex, type CalendarInputType, type NormalizedBirthInput } from './interpretation/input';
+import type { BirthInput, Element, SajuResult } from './manselyeok-core';
+import { BRANCH_ELEMENT, calculateSajuCore, STEM_INFO } from './manselyeok-core';
+import { calculateNatalCore, type NatalChartCore } from './natal-core';
+import {
+  calculateLiunianCore,
+  calculateZiweiCore,
+  getDaxianListCore,
+  type LiuNianInfoCore,
+  type ZiweiChartCore,
+} from './ziwei-core';
 
 export interface SamsinInput {
   year: number;
@@ -7,6 +18,14 @@ export interface SamsinInput {
   hour: number;
   minute: number;
   gender: 'M' | 'F';
+  calculationSex?: CalculationSex;
+  displayGender?: string;
+  unknownTime?: boolean;
+  birthTimePrecision?: BirthTimePrecision;
+  calendarInputType?: CalendarInputType;
+  lunarLeapMonth?: boolean;
+  analysisYear?: number;
+  timezone?: string;
   name: string;
   city?: string;
 }
@@ -29,41 +48,35 @@ export interface DaxianItem {
 
 export interface SamsinData {
   saju: SajuResult;
-  ziwei: ZiweiChart;
-  natal: NatalChart;
+  ziwei: ZiweiChartCore;
+  natal: NatalChartCore;
   input: SamsinInput;
   wuxing: WuxingCount;
   daxianList: DaxianItem[];
-  currentLiunian?: LiuNianInfo;
+  currentLiunian?: LiuNianInfoCore;
+  birthContext: NormalizedBirthInput;
 }
 
 export async function calculateSamsin(input: SamsinInput): Promise<SamsinData> {
-  const { calculateSaju, createChart, calculateNatal, getDaxianList, calculateLiunian } = await import('@orrery/core');
-  const { STEM_INFO, BRANCH_ELEMENT } = await import('@orrery/core/constants');
   const { getCityCoords } = await import('./cities');
+  const birthContext = normalizeBirthInput(input);
 
-  const { lat, lng } = getCityCoords(input.city ?? 'seoul');
+  const { lat, lng } = getCityCoords(birthContext.city);
   const birthInput: BirthInput = {
-    year: input.year,
-    month: input.month,
-    day: input.day,
-    hour: input.hour,
-    minute: input.minute,
-    gender: input.gender,
+    year: birthContext.year,
+    month: birthContext.month,
+    day: birthContext.day,
+    hour: birthContext.hour,
+    minute: birthContext.minute,
+    gender: birthContext.legacyGender,
+    unknownTime: birthContext.unknownTime,
     latitude: lat,
     longitude: lng,
   };
 
-  const saju = calculateSaju(birthInput);
-  const ziwei = createChart(
-    input.year,
-    input.month,
-    input.day,
-    input.hour,
-    input.minute,
-    input.gender === 'M',
-  );
-  const natal = await calculateNatal(birthInput);
+  const saju = calculateSajuCore(birthInput);
+  const ziwei = calculateZiweiCore(birthInput);
+  const natal = calculateNatalCore(birthInput);
 
   // 오행 분포 직접 계산 (pillars 순서: [시주, 일주, 월주, 년주])
   const wuxing: WuxingCount = { tree: 0, fire: 0, earth: 0, metal: 0, water: 0 };
@@ -75,13 +88,39 @@ export async function calculateSamsin(input: SamsinInput): Promise<SamsinData> {
   }
 
   // 자미두수 대한(大限) 리스트 + 유년(流年)
-  const daxianList: DaxianItem[] = getDaxianList(ziwei);
-  let currentLiunian: LiuNianInfo | undefined;
+  const daxianList: DaxianItem[] = getDaxianListCore(ziwei);
+  let currentLiunian: LiuNianInfoCore | undefined;
   try {
-    currentLiunian = calculateLiunian(ziwei, new Date().getFullYear());
+    currentLiunian = calculateLiunianCore(ziwei, birthContext.analysisYear);
   } catch { /* 유년 계산 실패 시 무시 */ }
 
-  return { saju, ziwei, natal, input, wuxing, daxianList, currentLiunian };
+  return {
+    saju,
+    ziwei,
+    natal,
+    input: {
+      ...input,
+      year: birthContext.year,
+      month: birthContext.month,
+      day: birthContext.day,
+      hour: birthContext.hour,
+      minute: birthContext.minute,
+      gender: birthContext.legacyGender,
+      city: birthContext.city,
+      calculationSex: birthContext.calculationSex,
+      displayGender: birthContext.displayGender,
+      unknownTime: birthContext.unknownTime,
+      birthTimePrecision: birthContext.birthTimePrecision,
+      calendarInputType: birthContext.calendarInputType,
+      lunarLeapMonth: birthContext.lunarLeapMonth,
+      analysisYear: birthContext.analysisYear,
+      timezone: birthContext.timezone,
+    },
+    wuxing,
+    daxianList,
+    currentLiunian,
+    birthContext,
+  };
 }
 
 // pillars 순서: [0]=시주, [1]=일주, [2]=월주, [3]=년주
@@ -96,10 +135,18 @@ export function getYearPillar(data: SamsinData): string {
 export function formatSajuSummary(data: SamsinData): string {
   const pillars = data.saju.pillars;
   // [시주, 일주, 월주, 년주] → 표시는 년월일시 순
-  const yearP = pillars[3]?.pillar.ganzi ?? '?';
-  const monthP = pillars[2]?.pillar.ganzi ?? '?';
-  const dayP = pillars[1]?.pillar.ganzi ?? '?';
-  const hourP = pillars[0]?.pillar.ganzi ?? '시주 미상';
+
+  // 각 기둥의 간지 + 십신/운성/신살 상세
+  const formatPillar = (pd: typeof pillars[number] | undefined, fallback: string) => {
+    if (!pd) return fallback;
+    const ganzi = pd.pillar.ganzi ?? fallback;
+    const details: string[] = [];
+    if (pd.stemSipsin) details.push(`천간십신: ${pd.stemSipsin}`);
+    if (pd.branchSipsin) details.push(`지지십신: ${pd.branchSipsin}`);
+    if (pd.unseong) details.push(`운성: ${pd.unseong}`);
+    if (pd.sinsal) details.push(`신살: ${pd.sinsal}`);
+    return details.length > 0 ? `${ganzi} [${details.join(', ')}]` : ganzi;
+  };
 
   const dayStem = pillars[1]?.pillar.stem ?? '';
   const dayBranch = pillars[1]?.pillar.branch ?? '';
@@ -108,11 +155,39 @@ export function formatSajuSummary(data: SamsinData): string {
   const elements = `木 ${w.tree} / 火 ${w.fire} / 土 ${w.earth} / 金 ${w.metal} / 水 ${w.water}`;
 
   let result = `사주 원국:
-- 연주(年柱): ${yearP}
-- 월주(月柱): ${monthP}
-- 일주(日柱): ${dayP} [일간: ${dayStem}, 일지: ${dayBranch}]
-- 시주(時柱): ${hourP}
+- 연주(年柱): ${formatPillar(pillars[3], '?')}
+- 월주(月柱): ${formatPillar(pillars[2], '?')}
+- 일주(日柱): ${formatPillar(pillars[1], '?')} [일간: ${dayStem}, 일지: ${dayBranch}]
+- 시주(時柱): ${formatPillar(pillars[0], '시주 미상')}
 오행 분포: ${elements}`;
+
+  // 합충형파(合沖刑破) — Map 방어 체크
+  const relations = data.saju.relations;
+  if (relations?.pairs && relations.pairs instanceof Map && relations.pairs.size > 0) {
+    const relLines: string[] = [];
+    relations.pairs.forEach((rel, key) => {
+      const parts: string[] = [];
+      for (const sr of rel.stem) parts.push(`천간 ${sr.type}${sr.detail ? `(${sr.detail})` : ''}`);
+      for (const br of rel.branch) parts.push(`지지 ${br.type}${br.detail ? `(${br.detail})` : ''}`);
+      if (parts.length) relLines.push(`  ${key}: ${parts.join(', ')}`);
+    });
+    if (relLines.length) result += '\n합충형파(合沖刑破):\n' + relLines.join('\n');
+  }
+  // 삼합/방합
+  if (relations?.triple?.length) {
+    const triLines = relations.triple.map(r => `  ${r.type}${r.detail ? ` (${r.detail})` : ''}`);
+    result += '\n삼합/방합:\n' + triLines.join('\n');
+  }
+
+  // 특수 신살 (양인/백호/괴강)
+  const sp = data.saju.specialSals;
+  if (sp) {
+    const spParts: string[] = [];
+    if (sp.yangin?.length) spParts.push(`양인(羊刃): ${sp.yangin.join(', ')}주`);
+    if (sp.baekho) spParts.push('백호(白虎): 있음');
+    if (sp.goegang) spParts.push('괴강(魁罡): 있음');
+    if (spParts.length) result += '\n특수 신살: ' + spParts.join(' / ');
+  }
 
   // 대운 배열 — seedingScore/harvestScore 산출에 필수
   const daewoon = data.saju.daewoon ?? [];
@@ -140,17 +215,23 @@ const PLANET_KO_MAP: Record<string, string> = {
 
 export function formatNatalSummary(data: SamsinData): string {
   const lines: string[] = [];
+  const hideHouseClaims = data.birthContext?.unknownTime;
+
+  if (hideHouseClaims) {
+    lines.push('출생 시각 미상: 어센던트, 하우스, 각궁 기반 해석은 제외하거나 낮은 확신으로만 참고');
+  }
 
   // 전체 행성 (13개)
   for (const p of data.natal.planets) {
     const name = PLANET_KO_MAP[p.id] ?? p.id;
     const retro = p.isRetrograde ? ' (R)' : '';
-    lines.push(`${name}: ${p.sign} ${Math.floor(p.degreeInSign)}도 (${p.house}하우스)${retro}`);
+    const house = hideHouseClaims ? '' : ` (${p.house}하우스)`;
+    lines.push(`${name}: ${p.sign} ${Math.floor(p.degreeInSign)}도${house}${retro}`);
   }
 
   // 앵글 (ASC, MC)
   const angles = data.natal.angles;
-  if (angles) {
+  if (angles && !hideHouseClaims) {
     lines.push(`어센던트(ASC): ${angles.asc.sign} ${Math.floor(angles.asc.degreeInSign)}도`);
     lines.push(`천정(MC): ${angles.mc.sign} ${Math.floor(angles.mc.degreeInSign)}도`);
   }
@@ -178,36 +259,53 @@ export function formatNatalSummary(data: SamsinData): string {
 }
 
 export function formatZiweiSummary(data: SamsinData): string {
+  if (data.birthContext?.unknownTime) {
+    return '출생 시각 미상: 자미두수 명궁, 궁위, 대한/유년 기반 내용은 조심스럽게만 제공';
+  }
+
   const palaces = data.ziwei.palaces ?? {};
   const mingPalace = palaces['命宮'];
   if (!mingPalace && Object.keys(palaces).length === 0) return '자미두수 정보 없음';
 
   const lines: string[] = [];
 
-  // 명궁 + 오행국
-  const mingStars = mingPalace ? mingPalace.stars.map(s => s.name).join(', ') : '없음';
+  // 명궁 + 오행국 (밝기 포함)
+  const mingStars = mingPalace
+    ? mingPalace.stars.map(s => s.brightness ? `${s.name}(${s.brightness})` : s.name).join(', ')
+    : '없음';
   lines.push(`명궁(命宮) 별: ${mingStars} / 오행국: ${data.ziwei.wuXingJu.name}(${data.ziwei.wuXingJu.number}국)`);
 
-  // 화록/화기 위치 — harvestScore/seedingScore 산출에 필수
+  // 사화(四化) 4종 전부 추적 — harvestScore/seedingScore 산출에 필수
   const huaLu: string[] = [];
+  const huaQuan: string[] = [];
+  const huaKe: string[] = [];
   const huaJi: string[] = [];
   for (const [palaceName, palace] of Object.entries(palaces)) {
     for (const star of palace.stars) {
       if (star.siHua === '化祿') huaLu.push(`${palaceName} — ${star.name}化祿`);
+      if (star.siHua === '化權') huaQuan.push(`${palaceName} — ${star.name}化權`);
+      if (star.siHua === '化科') huaKe.push(`${palaceName} — ${star.name}化科`);
       if (star.siHua === '化忌') huaJi.push(`${palaceName} — ${star.name}化忌`);
     }
   }
   if (huaLu.length) lines.push(`화록(化祿) 위치: ${huaLu.join(', ')}`);
+  if (huaQuan.length) lines.push(`화권(化權) 위치: ${huaQuan.join(', ')}`);
+  if (huaKe.length) lines.push(`화과(化科) 위치: ${huaKe.join(', ')}`);
   if (huaJi.length) lines.push(`화기(化忌) 위치: ${huaJi.join(', ')}`);
 
-  // 주요 궁 (재백·관록·천이·부처·복덕)
-  const KEY_PALACES = ['財帛宮', '官祿宮', '遷移宮', '夫妻宮', '福德宮'];
+  // 주요 궁 (재백·관록·천이·부처·복덕) — 밝기 포함
+  const KEY_PALACES = ['財帛', '官祿', '遷移', '夫妻', '福德'];
   const palaceLines: string[] = [];
   for (const pName of KEY_PALACES) {
     const p = palaces[pName];
     if (!p || p.stars.length === 0) continue;
-    const starStr = p.stars.map(s => s.siHua ? `${s.name}[${s.siHua}]` : s.name).join(', ');
-    palaceLines.push(`  - ${pName}: ${starStr}`);
+    const starStr = p.stars.map(s => {
+      let display = s.name;
+      if (s.brightness) display += `(${s.brightness})`;
+      if (s.siHua) display += `[${s.siHua}]`;
+      return display;
+    }).join(', ');
+    palaceLines.push(`  - ${pName}宮: ${starStr}`);
   }
   if (palaceLines.length) lines.push('주요 궁:\n' + palaceLines.join('\n'));
 

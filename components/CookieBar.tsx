@@ -1,34 +1,34 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 import { initCookies, getCookieCount } from '@/lib/cookies';
 
 interface CookieBarProps {
   onShopClick: () => void;
 }
 
-export default function CookieBar({ onShopClick }: CookieBarProps) {
-  const [count, setCount] = useState(0);
+function subscribeToCookieChanges(onStoreChange: () => void) {
+  if (typeof window === 'undefined') return () => {};
 
-  useEffect(() => {
-    setCount(initCookies());
-    const handler = () => setCount(getCookieCount());
-    window.addEventListener('cookie-change', handler);
-    return () => window.removeEventListener('cookie-change', handler);
-  }, []);
+  initCookies();
+  onStoreChange();
+  window.addEventListener('cookie-change', onStoreChange);
+  return () => window.removeEventListener('cookie-change', onStoreChange);
+}
+
+export default function CookieBar({ onShopClick }: CookieBarProps) {
+  const count = useSyncExternalStore(subscribeToCookieChanges, getCookieCount, () => 0);
 
   return (
     <div
-      className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-4 py-2"
-      style={{ background: 'rgba(6,6,15,0.85)', backdropFilter: 'blur(8px)', borderBottom: '1px solid rgba(201,168,76,0.1)' }}
+      className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between border-b border-[var(--line)] bg-[rgba(255,250,242,0.92)] px-4 py-2 backdrop-blur"
     >
-      <span className="text-xs font-semibold tracking-widest gold-gradient">삼신사주</span>
+      <span className="text-xs font-black text-[var(--ink)]">삼신사주</span>
       <button
         onClick={onShopClick}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all hover:opacity-80"
-        style={{ background: 'rgba(201,168,76,0.12)', border: '1px solid rgba(201,168,76,0.3)', color: '#c9a84c' }}
+        className="chip chip-gold"
       >
-        🍪 <span>{count}개</span>
+        <span>{count}쿠키</span>
       </button>
     </div>
   );

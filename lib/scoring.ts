@@ -1,5 +1,6 @@
 import type { SamsinData, DaxianItem } from './saju';
-import type { DaewoonItem, NatalHouse, NatalAspect } from '@orrery/core';
+import type { DaewoonItem } from './manselyeok-core';
+import type { NatalAspectCore as NatalAspect, NatalHouseCore as NatalHouse } from './natal-core';
 import type { PhaseType } from './claude';
 
 // ─── 타입 ──────────────────────────────────────────────────────────────
@@ -25,7 +26,7 @@ function clamp(min: number, max: number, v: number): number {
 }
 
 // ─── 한자/한글 양방향 룩업 ──────────────────────────────────────────────
-// @orrery/core에서 hanja로 올 수 있으므로 양방향 맵 구축
+// Legacy oracle fixtures used hanja, so keep bidirectional lookups.
 const UNSEONG_BASE: Record<string, number> = {};
 const UNSEONG_ENTRIES: [string, string, number][] = [
   ['長生', '장생', 78], ['沐浴', '목욕', 70], ['冠帶', '관대', 78],
@@ -164,11 +165,17 @@ const BRIGHTNESS_SCORE: Record<string, number> = {
 };
 
 const PALACE_MONEY_RELEVANCE: Record<string, number> = {
-  '財帛宮': 15, '田宅宮': 8, '命宮': 5, '福德宮': 5,
+  '財帛': 15, '財帛宮': 15,
+  '田宅': 8, '田宅宮': 8,
+  '命宮': 5,
+  '福德': 5, '福德宮': 5,
 };
 
 const PALACE_CAREER_RELEVANCE: Record<string, number> = {
-  '官祿宮': 15, '遷移宮': 8, '命宮': 5, '福德宮': 5,
+  '官祿': 15, '官祿宮': 15,
+  '遷移': 8, '遷移宮': 8,
+  '命宮': 5,
+  '福德': 5, '福德宮': 5,
 };
 
 const SIHUA_MOD: Record<string, number> = {
@@ -260,18 +267,21 @@ function computeNatalScore(
   data: SamsinData,
   domain: 'money' | 'career',
 ): number {
+  if (data.birthContext?.unknownTime) return 55;
+
   const jupiter = data.natal.planets.find(p => p.id === 'Jupiter');
   const saturn = data.natal.planets.find(p => p.id === 'Saturn');
   if (!jupiter || !saturn) return 55;
 
   const age = period.midAge;
   const houses = data.natal.houses;
+  if (!houses || houses.length < 12) return 55;
 
   // 추정 트랜짓 경도
   const jupiterTransitLon = (jupiter.longitude + age * JUPITER_DEG_PER_YEAR) % 360;
   const saturnTransitLon = (saturn.longitude + age * SATURN_DEG_PER_YEAR) % 360;
 
-  // 하우스 판정
+  // 하우스 분류
   const jupHouse = findHouse(jupiterTransitLon, houses);
   const satHouse = findHouse(saturnTransitLon, houses);
 
@@ -312,7 +322,7 @@ function determinePhaseTypes(periods: ScoredPeriod[]): void {
   if (periods.length === 0) return;
 
   const maxScore = Math.max(...periods.map(p => p.score));
-  // 전체 추세 방향: 첫 구간 판정에 사용
+  // 전체 추세 방향: 첫 구간 분류에 사용
   const trend = periods.length >= 2 ? periods[1].score - periods[0].score : 0;
 
   for (let i = 0; i < periods.length; i++) {
@@ -322,7 +332,7 @@ function determinePhaseTypes(periods: ScoredPeriod[]): void {
     if (curr >= maxScore - 5) {
       periods[i].phaseType = 'peak';
     } else if (prev === null) {
-      // 첫 구간: 전체 추세 + 절대 점수로 판정
+      // 첫 구간: 전체 추세 + 절대 점수로 분류
       if (curr < 40) {
         periods[i].phaseType = 'seeding';
       } else if (trend > 5) {
@@ -370,7 +380,7 @@ export function computeAllScores(data: SamsinData): ComputedScores {
   function scoreDomain(domain: 'money' | 'career'): ScoredPeriod[] {
     const scored: ScoredPeriod[] = trimmedPeriods.map(p => {
       const sajuScore = computeSajuScore(p.daewoon, domain);
-      const ziweiScore = computeZiweiScore(p, palaces, domain);
+      const ziweiScore = data.birthContext?.unknownTime ? 50 : computeZiweiScore(p, palaces, domain);
       const natalScore = computeNatalScore(p, data, domain);
       const score = Math.round((sajuScore + ziweiScore + natalScore) / 3);
       return {

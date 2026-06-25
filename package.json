@@ -1,16 +1,27 @@
 {
   "name": "samsin-saju",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "verify:manselyeok": "node --experimental-strip-types --experimental-loader ./scripts/ts-extension-loader.mjs scripts/verify-manselyeok-random.ts",
+    "verify:ziwei": "node --experimental-strip-types --experimental-loader ./scripts/ts-extension-loader.mjs scripts/verify-ziwei-random.ts",
+    "verify:natal": "node --experimental-strip-types --experimental-loader ./scripts/ts-extension-loader.mjs scripts/verify-natal-random.ts",
+    "verify:interpretation": "node --experimental-strip-types --experimental-loader ./scripts/ts-extension-loader.mjs scripts/verify-interpretation-model.ts",
+    "verify:safety": "node --experimental-strip-types --experimental-loader ./scripts/ts-extension-loader.mjs scripts/verify-safety-audit.ts",
+    "verify:trinity-decision": "node --experimental-strip-types --experimental-loader ./scripts/ts-extension-loader.mjs scripts/verify-trinity-decision.ts",
+    "verify:trinity-routing": "node --experimental-strip-types --experimental-loader ./scripts/ts-extension-loader.mjs scripts/verify-trinity-routing.ts",
+    "verify:trinity-runtime": "node --experimental-strip-types --experimental-loader ./scripts/ts-extension-loader.mjs scripts/verify-trinity-runtime.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@orrery/core": "^0.3.0",
+    "astronomy-engine": "2.1.19",
+    "lunar-javascript": "^1.7.7",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3",

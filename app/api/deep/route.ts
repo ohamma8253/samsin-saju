@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateDeepCheongwoon, generateDeepTaeeul, generateDeepLuna } from '@/lib/claude';
+import { samsinAgent } from '@/lib/samsin-agent';
+import type { SamsinCharacter } from '@/lib/samsin-agent';
 import { getSession } from '@/lib/session';
 import { BirthParamsSchema } from '@/lib/schema';
+import {
+  auditOracleRouteText,
+  buildOracleTransportFromCore,
+  buildSamsinOracleCore,
+  systemForCharacter,
+} from '@/lib/interpretation';
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,13 +21,33 @@ export async function POST(req: NextRequest) {
 
     const { data: samsinData } = await getSession(parsed.data);
 
-    let report;
-    if (character === 'cheongwoon') report = await generateDeepCheongwoon(samsinData);
-    else if (character === 'taeeul') report = await generateDeepTaeeul(samsinData);
-    else if (character === 'luna') report = await generateDeepLuna(samsinData);
-    else return NextResponse.json({ error: '잘못된 캐릭터' }, { status: 400 });
+    if (character !== 'cheongwoon' && character !== 'taeeul' && character !== 'luna') {
+      return NextResponse.json({ error: '잘못된 캐릭터' }, { status: 400 });
+    }
 
-    return NextResponse.json({ report });
+    const report = samsinAgent.generateDeepReport(character as SamsinCharacter, samsinData);
+    const oracle = buildSamsinOracleCore(samsinData);
+    const system = systemForCharacter(character);
+    const oracleAudit = auditOracleRouteText(
+      report.sections.flatMap(section => [section.title, section.content]),
+      oracle,
+      { system, limit: 8, allowSafetyOnlyWhenNoClaims: true },
+    );
+
+    if (!oracleAudit.passed) {
+      return NextResponse.json(
+        {
+          error: '자세한 내용의 이유를 확인하지 못했어요. 표현을 더 조심스럽게 바꾼 뒤 다시 시도해주세요.',
+          oracle: buildOracleTransportFromCore(oracle, { audit: oracleAudit, system, limit: 4 }),
+        },
+        { status: 422 },
+      );
+    }
+
+    return NextResponse.json({
+      report,
+      oracle: buildOracleTransportFromCore(oracle, { audit: oracleAudit, system, limit: 4 }),
+    });
   } catch (err) {
     console.error('Deep API error:', err);
     return NextResponse.json({ error: err instanceof Error ? err.message : '오류' }, { status: 500 });

@@ -1,6 +1,61 @@
-# 삼신사주 (三神四柱)
+# 삼신사주 (三神四柱) — Samsin Saju
 
-> 사주팔자 · 자미두수 · 서양 점성술 — 3개 이론이 합의하는 당신의 운명
+> 사주팔자 · 자미두수 · 서양 점성술 — 3개 이론이 합의하는 당신의 운명  
+> Korean & Western AI fortune-telling — three traditions, three AI models, one consensus
+
+[![CI](https://github.com/ohamma8253/samsin-saju/actions/workflows/ci.yml/badge.svg)](https://github.com/ohamma8253/samsin-saju/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+---
+
+## English Overview
+
+**Samsin Saju** is an open-source AI web app that fuses 3,000 years of Eastern and Western astrological traditions through a novel multi-model consensus architecture.
+
+Three independent AI "gods" analyze your birth data through their own tradition — Korean 사주팔자 (Four Pillars), 자미두수 (Purple Star Astrology), and Western natal astrology — then a cross-model consensus layer (Claude + OpenAI GPT) finds where all three agree.
+
+### Architecture
+
+```
+User birth data
+      │
+      ├─► 청운 (Claude) — 사주팔자 analysis
+      ├─► 태을 (Claude) — 자미두수 analysis  
+      └─► 루나 (Claude) — Western natal analysis
+                │
+                ▼
+      Trinity Compare (OpenAI GPT-5) — cross-validates 3 traditions
+                │
+                ▼
+      Decision Apply (OpenAI GPT-5) — synthesizes consensus
+                │
+                ▼
+      Korean Renderer (Claude) — final narrative output
+```
+
+- **Three traditions**: Each AI is prompted with 3,000+ years of domain knowledge for its tradition only
+- **Real astronomical data**: Uses `@orrery/core` + `astronomy-engine` for actual ephemeris calculations
+- **Cross-provider consensus**: Claude handles cultural/tradition reasoning; OpenAI GPT-5 handles boundary auditing and consensus synthesis
+- **Fully configurable**: Override any model via environment variables (see `env.example`)
+
+### Quick Start
+
+```bash
+git clone https://github.com/ohamma8253/samsin-saju.git
+cd samsin-saju
+npm install
+
+# Set up environment
+cp env.example .env.local
+# Edit .env.local and add your OPENROUTER_API_KEY
+
+npm run dev
+# Open http://localhost:3000
+```
+
+Get a free OpenRouter API key at [openrouter.ai](https://openrouter.ai) — supports Claude, GPT-5, Gemini, and 100+ models.
+
+---
 
 ## What is this?
 

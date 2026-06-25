@@ -37,15 +37,30 @@ export function addCookies(amount: number): number {
 
 export function isUnlocked(key: string): boolean {
   if (typeof window === 'undefined') return false;
-  const unlocked = JSON.parse(localStorage.getItem(UNLOCKED_KEY) ?? '[]') as string[];
+  const unlocked = readUnlocked();
   return unlocked.includes(key);
 }
 
 export function setUnlocked(key: string): void {
   if (typeof window === 'undefined') return;
-  const unlocked = JSON.parse(localStorage.getItem(UNLOCKED_KEY) ?? '[]') as string[];
+  const unlocked = readUnlocked();
   if (!unlocked.includes(key)) {
     unlocked.push(key);
     localStorage.setItem(UNLOCKED_KEY, JSON.stringify(unlocked));
+  }
+}
+
+export function clearUnlocked(key: string): void {
+  if (typeof window === 'undefined') return;
+  const next = readUnlocked().filter(item => item !== key);
+  localStorage.setItem(UNLOCKED_KEY, JSON.stringify(next));
+}
+
+function readUnlocked(): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(UNLOCKED_KEY) ?? '[]') as unknown;
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
   }
 }

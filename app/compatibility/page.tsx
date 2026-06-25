@@ -1,107 +1,381 @@
 'use client';
 
-import { useEffect, useState, Suspense } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
-import StarsBg from '@/components/StarsBg';
+import { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import BottomNav from '@/components/BottomNav';
 import CookieBar from '@/components/CookieBar';
-import CookieShopModal from '@/components/CookieShopModal';
-import { decodeInvite } from '@/lib/invite';
-import { getCookieCount, deductCookies } from '@/lib/cookies';
-
-const LIGHT_COST = 8;
-const DEEP_COST  = 7; // 라이트 이후 추가
+import CookieShopModal, { type CookieShopContext } from '@/components/CookieShopModal';
+import SafetyNotice from '@/components/SafetyNotice';
+import { trackEvent } from '@/lib/analytics';
+import { upsertArchiveItem } from '@/lib/archive';
+import { CITIES, DEFAULT_CITY } from '@/lib/cities';
+import { addCookies, clearUnlocked, deductCookies, getCookieCount, isUnlocked, setUnlocked } from '@/lib/cookies';
+import { buildCompatibilityId, buildEntitlementKey } from '@/lib/entitlements';
+import { decodeInvite, encodeInvite } from '@/lib/invite';
+import { COMPATIBILITY_COST, formatCookieValue } from '@/lib/pricing';
+import type { SamsinInput } from '@/lib/saju';
 
 interface LightReport {
-  gijil:        { headline: string; body: string };
-  sothrough:    { headline: string; body: string };
-  strength:     { headline: string; body: string };
+  gijil: { headline: string; body: string };
+  sothrough: { headline: string; body: string };
+  strength: { headline: string; body: string };
   samsinMessage: string;
 }
 
 interface DeepReport {
-  emotion:    { headline: string; body: string };
-  longterm:   { headline: string; body: string };
+  emotion: { headline: string; body: string };
+  longterm: { headline: string; body: string };
   sokgungham: { headline: string; body: string };
-  bestTime:   string;
+  bestTime: string;
 }
 
 interface CompatResult {
   ohaengRelation: string;
-  summary:        string;
-  light:          LightReport;
-  deep?:          DeepReport;
+  summary: string;
+  light: LightReport;
+  deep?: DeepReport;
 }
 
-const CHAR_EMOJIS = ['🌿', '☁️', '✦'];
+const lightSections = [
+  ['gijil', '기질 합의'],
+  ['sothrough', '대화 방식'],
+  ['strength', '관계 강점'],
+] as const;
+
+const HOURS = [
+  { label: '시간 모름', value: '-1' },
+  { label: '자시 23~01', value: '0' },
+  { label: '축시 01~03', value: '2' },
+  { label: '인시 03~05', value: '4' },
+  { label: '묘시 05~07', value: '6' },
+  { label: '진시 07~09', value: '8' },
+  { label: '사시 09~11', value: '10' },
+  { label: '오시 11~13', value: '12' },
+  { label: '미시 13~15', value: '14' },
+  { label: '신시 15~17', value: '16' },
+  { label: '유시 17~19', value: '18' },
+  { label: '술시 19~21', value: '20' },
+  { label: '해시 21~23', value: '22' },
+];
+
+interface PersonDraft {
+  name: string;
+  gender: 'M' | 'F';
+  year: string;
+  month: string;
+  day: string;
+  hour: string;
+  city: string;
+}
+
+function emptyPersonDraft(gender: 'M' | 'F'): PersonDraft {
+  return {
+    name: '',
+    gender,
+    year: '',
+    month: '1',
+    day: '',
+    hour: '-1',
+    city: DEFAULT_CITY,
+  };
+}
+
+function isValidBirthDate(year: number, month: number, day: number): boolean {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
+  if (year < 1920 || year > 2010 || month < 1 || month > 12 || day < 1) return false;
+  return day <= new Date(year, month, 0).getDate();
+}
+
+function draftToInput(draft: PersonDraft): SamsinInput | null {
+  const year = Number(draft.year);
+  const month = Number(draft.month);
+  const day = Number(draft.day);
+  const hour = Number(draft.hour);
+  if (!draft.name.trim() || !Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+  if (!isValidBirthDate(year, month, day)) return null;
+  const unknownTime = hour < 0;
+  return {
+    name: draft.name.trim(),
+    gender: draft.gender,
+    year,
+    month,
+    day,
+    hour: unknownTime ? 12 : hour,
+    minute: 0,
+    city: draft.city,
+    unknownTime,
+    birthTimePrecision: unknownTime ? 'unknown' : 'range',
+  };
+}
+
+function PersonForm({
+  title,
+  draft,
+  onChange,
+}: {
+  title: string;
+  draft: PersonDraft;
+  onChange: (next: PersonDraft) => void;
+}) {
+  return (
+    <section className="panel p-4">
+      <p className="section-label">{title}</p>
+      <div className="mt-4 space-y-4">
+        <div>
+          <label className="field-label">이름</label>
+          <input
+            value={draft.name}
+            onChange={event => onChange({ ...draft, name: event.target.value })}
+            maxLength={10}
+            placeholder={title === '나' ? '내 이름' : '상대 이름'}
+            className="field"
+          />
+        </div>
+
+        <div>
+          <p className="field-label">성별</p>
+          <div className="segmented">
+            {(['M', 'F'] as const).map(value => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => onChange({ ...draft, gender: value })}
+                className={`segment ${draft.gender === value ? 'segment-active' : ''}`}
+              >
+                {value === 'M' ? '남성' : '여성'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="field-label">생년월일</p>
+          <div className="grid grid-cols-[1.5fr_1fr_1fr] gap-2">
+            <input
+              value={draft.year}
+              onChange={event => onChange({ ...draft, year: event.target.value })}
+              inputMode="numeric"
+              maxLength={4}
+              placeholder="년도"
+              className="field text-center"
+            />
+            <select
+              value={draft.month}
+              onChange={event => onChange({ ...draft, month: event.target.value })}
+              className="field text-center"
+            >
+              {Array.from({ length: 12 }, (_, index) => (
+                <option key={index + 1} value={index + 1}>{index + 1}월</option>
+              ))}
+            </select>
+            <input
+              value={draft.day}
+              onChange={event => onChange({ ...draft, day: event.target.value })}
+              inputMode="numeric"
+              maxLength={2}
+              placeholder="일"
+              className="field text-center"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="field-label">출생시간</label>
+            <select
+              value={draft.hour}
+              onChange={event => onChange({ ...draft, hour: event.target.value })}
+              className="field"
+            >
+              {HOURS.map(item => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="field-label">출생지역</label>
+            <select
+              value={draft.city}
+              onChange={event => onChange({ ...draft, city: event.target.value })}
+              className="field"
+            >
+              {Object.entries(CITIES).map(([key, item]) => (
+                <option key={key} value={key}>{item.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 function CompatibilityContent() {
   const searchParams = useSearchParams();
-  const router       = useRouter();
+  const router = useRouter();
 
-  const a   = searchParams.get('a')   ?? '';
-  const b   = searchParams.get('b')   ?? '';
+  const a = searchParams.get('a') ?? '';
+  const b = searchParams.get('b') ?? '';
   const rel = (searchParams.get('rel') ?? 'romantic') as 'friend' | 'romantic';
 
   const personA = decodeInvite(a);
   const personB = decodeInvite(b);
 
-  const [phase,     setPhase]     = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
-  const [result,    setResult]    = useState<CompatResult | null>(null);
-  const [deepPhase, setDeepPhase] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
-  const [deepData,  setDeepData]  = useState<DeepReport | null>(null);
-  const [showShop,  setShowShop]  = useState(false);
-  const [visible,   setVisible]   = useState(0);
+  const [phase, setPhase] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [result, setResult] = useState<CompatResult | null>(null);
+  const [deepData, setDeepData] = useState<DeepReport | null>(null);
+  const [showShop, setShowShop] = useState(false);
+  const [shopContext, setShopContext] = useState<CookieShopContext | undefined>();
+  const [shopAutoContinue, setShopAutoContinue] = useState(false);
+  const [visible, setVisible] = useState(0);
+  const [directA, setDirectA] = useState<PersonDraft>(() => emptyPersonDraft('M'));
+  const [directB, setDirectB] = useState<PersonDraft>(() => emptyPersonDraft('F'));
+  const [directRel, setDirectRel] = useState<'friend' | 'romantic'>('romantic');
+  const [directError, setDirectError] = useState('');
+  const compatibilityId = personA && personB ? buildCompatibilityId(personA, personB, rel) : '';
+  const compatibilityKey = compatibilityId ? buildEntitlementKey('compatibility', compatibilityId) : '';
 
-  // 섹션 순차 등장
+  const openShop = (entryPoint: string) => {
+    const currentCookie = getCookieCount();
+    trackEvent('shop_opened', {
+      entry_point: entryPoint,
+      product_id: 'compatibility',
+      required_cookie: COMPATIBILITY_COST,
+      current_cookie: currentCookie,
+    });
+    trackEvent('paywall_viewed', {
+      product_id: 'compatibility',
+      required_cookie: COMPATIBILITY_COST,
+      current_cookie: currentCookie,
+      entry_point: entryPoint,
+    });
+    setShopContext({ productId: 'compatibility', requiredCookie: COMPATIBILITY_COST });
+    setShopAutoContinue(entryPoint === 'compatibility_cta');
+    setShowShop(true);
+  };
+
+  const closeShop = () => {
+    setShowShop(false);
+    setShopContext(undefined);
+    setShopAutoContinue(false);
+  };
+
   useEffect(() => {
     if (phase !== 'done') return;
     const timer = setInterval(() => {
-      setVisible(prev => { if (prev < 6) return prev + 1; clearInterval(timer); return prev; });
-    }, 350);
+      setVisible(prev => {
+        if (prev < 6) return prev + 1;
+        clearInterval(timer);
+        return prev;
+      });
+    }, 220);
     return () => clearInterval(timer);
   }, [phase]);
 
-  if (!personA || !personB) {
+  const hasEncodedPair = Boolean(a || b);
+  if ((!personA || !personB) && hasEncodedPair) {
     return (
-      <main className="relative min-h-screen flex items-center justify-center px-4">
-        <StarsBg />
-        <div className="relative z-10 text-center space-y-4">
-          <p style={{ color: 'var(--text-muted)' }}>잘못된 접근입니다.</p>
-          <button onClick={() => router.push('/')} className="text-sm underline" style={{ color: 'var(--gold)' }}>홈으로</button>
+      <main className="min-h-screen pb-24">
+        <div className="mobile-shell flex min-h-screen items-center">
+          <div className="panel p-6 text-center">
+            <p className="section-label">링크 오류</p>
+            <h1 className="title-tight mt-2">궁합 정보를 읽지 못했어요</h1>
+            <button type="button" onClick={() => router.push('/compatibility')} className="btn-primary mt-5 w-full">
+              직접 입력하기
+            </button>
+          </div>
         </div>
+        <BottomNav active="compatibility" />
       </main>
     );
   }
 
-  const handleFetchLight = async () => {
-    if (getCookieCount() < LIGHT_COST) { setShowShop(true); return; }
-    const ok = deductCookies(LIGHT_COST);
-    if (!ok) { setShowShop(true); return; }
+  if (!personA || !personB) {
+    const startCompatibility = () => {
+      const nextA = draftToInput(directA);
+      const nextB = draftToInput(directB);
+      if (!nextA || !nextB) {
+        setDirectError('두 사람의 이름과 생년월일을 확인해주세요.');
+        return;
+      }
+      trackEvent('compat_direct_started', {
+        relationship: directRel,
+        a_unknown_time: Boolean(nextA.unknownTime),
+        b_unknown_time: Boolean(nextB.unknownTime),
+      });
+      const nextParams = new URLSearchParams({
+        a: encodeInvite(nextA),
+        b: encodeInvite(nextB),
+        rel: directRel,
+      });
+      router.push(`/compatibility?${nextParams.toString()}`);
+    };
+
+    return (
+      <main className="min-h-screen pb-24">
+        <div className="mobile-shell space-y-4">
+          <header className="panel-strong p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="section-label">궁합</p>
+                <h1 className="mt-1 text-2xl font-black">두 사람의 흐름을 볼게요</h1>
+                <p className="muted-copy mt-2">
+                  두 사람의 기질, 소통 방식, 장기 흐름을 같은 기준으로 비교해요.
+                </p>
+              </div>
+              <span className="chip chip-gold">{formatCookieValue(COMPATIBILITY_COST)}</span>
+            </div>
+          </header>
+
+          <div className="segmented">
+            {(['romantic', 'friend'] as const).map(value => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setDirectRel(value)}
+                className={`segment ${directRel === value ? 'segment-active' : ''}`}
+              >
+                {value === 'romantic' ? '연인·부부' : '친구·지인'}
+              </button>
+            ))}
+          </div>
+
+          <PersonForm title="나" draft={directA} onChange={setDirectA} />
+          <PersonForm title="상대" draft={directB} onChange={setDirectB} />
+
+          {directError && (
+            <p className="rounded-lg bg-[var(--red-soft)] px-3 py-2 text-xs font-bold text-[var(--red)]">
+              {directError}
+            </p>
+          )}
+
+          <button type="button" onClick={startCompatibility} className="btn-primary w-full">
+            궁합 보러 가기
+          </button>
+          <SafetyNotice />
+        </div>
+        <BottomNav active="compatibility" />
+      </main>
+    );
+  }
+
+  const handleFetchCompatibility = async () => {
+    let charged = false;
+    if (!isUnlocked(compatibilityKey)) {
+      if (getCookieCount() < COMPATIBILITY_COST) {
+        openShop('compatibility_cta');
+        return;
+      }
+      const ok = deductCookies(COMPATIBILITY_COST);
+      if (!ok) {
+        openShop('compatibility_cta');
+        return;
+      }
+      setUnlocked(compatibilityKey);
+      charged = true;
+    }
 
     setPhase('loading');
-    try {
-      const res = await fetch('/api/compatibility', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ personA, personB, relationship: rel, includeDeep: false }),
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      setResult(data.report);
-      setPhase('done');
-    } catch {
-      setPhase('error');
-      const { addCookies } = await import('@/lib/cookies');
-      addCookies(LIGHT_COST);
-    }
-  };
-
-  const handleFetchDeep = async () => {
-    if (getCookieCount() < DEEP_COST) { setShowShop(true); return; }
-    const ok = deductCookies(DEEP_COST);
-    if (!ok) { setShowShop(true); return; }
-
-    setDeepPhase('loading');
     try {
       const res = await fetch('/api/compatibility', {
         method: 'POST',
@@ -110,212 +384,173 @@ function CompatibilityContent() {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      setResult(data.report);
       setDeepData(data.report.deep ?? null);
-      setDeepPhase('done');
+      upsertArchiveItem({
+        id: compatibilityId,
+        kind: 'compatibility',
+        name: `${personA.name} · ${personB.name}`,
+        headline: data.report.summary,
+        summary: data.report.light?.samsinMessage ?? '두 사람의 관계 신호를 비교했습니다.',
+        reportUrl: `/compatibility?${searchParams.toString()}`,
+        badges: ['궁합 보기', `${COMPATIBILITY_COST}쿠키`, rel === 'romantic' ? '연인·부부' : '친구·지인'],
+        firstReadingUnlocked: true,
+        deepBundleUnlocked: true,
+      });
+      trackEvent('result_saved', {
+        kind: 'compatibility',
+        report_id: compatibilityId,
+        charged,
+      });
+      setPhase('done');
     } catch {
-      setDeepPhase('error');
-      const { addCookies } = await import('@/lib/cookies');
-      addCookies(DEEP_COST);
+      setPhase('error');
+      if (charged) {
+        addCookies(COMPATIBILITY_COST);
+        clearUnlocked(compatibilityKey);
+      }
     }
+  };
+
+  const handleShopBought = () => {
+    if (shopAutoContinue) void handleFetchCompatibility();
+    return getCookieCount();
   };
 
   return (
     <>
-      <CookieBar onShopClick={() => setShowShop(true)} />
+      <CookieBar onShopClick={() => openShop('compatibility_cookie_bar')} />
 
-      <main className="relative min-h-screen px-4 pt-14 pb-20">
-        <StarsBg />
-
-        <div className="relative z-10 max-w-lg mx-auto space-y-6">
-
-          {/* 헤더 */}
-          <div className="text-center space-y-3 animate-fade-up">
-            <div className="flex justify-center gap-2 text-2xl">
-              {CHAR_EMOJIS.map((e, i) => <span key={i}>{e}</span>)}
+      <main className="mobile-shell min-h-screen pt-16 pb-24">
+        <section className="space-y-5">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="chip chip-blue">궁합</span>
+              <span className="chip">{rel === 'romantic' ? '연인·부부' : '친구·지인'}</span>
+              <span className="chip chip-gold">{formatCookieValue(COMPATIBILITY_COST)}</span>
             </div>
-            <h1 className="text-xl font-bold gold-gradient">
-              {rel === 'romantic' ? '연인 궁합' : '친구 궁합'}
-            </h1>
+            <h1 className="display-title !text-[34px]">두 사람의 관계 신호를 비교해요</h1>
+            <p className="body-copy">
+              사주 기반의 기질, 대화 방식, 장기 흐름을 나눠서 보여드려요. 같은 점과 다른 점은 따로 정리해요.
+            </p>
           </div>
 
-          {/* 두 사람 */}
           <div className="grid grid-cols-2 gap-3">
-            {[personA, personB].map((p, i) => (
-              <div key={i} className="card-dark p-4 text-center space-y-1">
-                <p className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>{p.name}</p>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                  {p.year}.{p.month}.{p.day}
-                </p>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                  {p.gender === 'M' ? '남' : '여'}
+            {[personA, personB].map((person, index) => (
+              <div key={`${person.name}-${index}`} className="panel p-4">
+                <p className="section-label">{index === 0 ? '나' : '상대'}</p>
+                <p className="mt-2 text-lg font-black text-[var(--ink)]">{person.name}</p>
+                <p className="muted-copy mt-1">
+                  {person.year}.{person.month}.{person.day} · {person.gender === 'M' ? '남' : '여'}
                 </p>
               </div>
             ))}
           </div>
 
-          {/* 시작 전 */}
           {phase === 'idle' && (
-            <div className="card-dark p-6 text-center space-y-4 animate-fade-up">
-              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                세 신이 두 사람의 인연을 읽어드립니다
-              </p>
-              <div className="text-xs space-y-1" style={{ color: 'var(--text-muted)' }}>
-                <p>🍪 {LIGHT_COST}개 — 기질·소통·강점 궁합</p>
-                {rel === 'romantic' && <p>🍪 +{DEEP_COST}개 — 감정·미래·속궁합 심층 분석</p>}
+            <div className="panel-strong p-5">
+              <p className="section-label">궁합 보기</p>
+              <h2 className="title-tight mt-2">두 사람의 흐름을 한 번에 볼게요</h2>
+              <div className="mt-4 grid gap-2">
+                {['기질 차이', '대화 방식', '관계 강점', '오래 가는 리듬'].map(item => (
+                  <div key={item} className="flex items-center gap-3 rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2">
+                    <span className="evidence-dot" />
+                    <span className="text-sm font-bold text-[var(--ink-soft)]">{item}</span>
+                  </div>
+                ))}
               </div>
-              <button onClick={handleFetchLight}
-                className="w-full py-4 rounded-xl text-sm font-bold transition-all hover:opacity-90"
-                style={{ background: 'linear-gradient(135deg, #b8933e, #e8c97a, #b8933e)', color: '#06060f' }}>
-                🍪 {LIGHT_COST}개로 궁합 보기
+              <button type="button" onClick={handleFetchCompatibility} className="btn-primary mt-5 w-full">
+                {COMPATIBILITY_COST}쿠키로 궁합 보기
               </button>
             </div>
           )}
 
-          {/* 로딩 */}
           {phase === 'loading' && (
-            <div className="text-center py-16 space-y-4">
-              <div className="w-10 h-10 rounded-full border-2 mx-auto animate-spin"
-                style={{ borderColor: 'rgba(201,168,76,0.3)', borderTopColor: '#c9a84c' }} />
-              <p className="text-sm" style={{ color: 'var(--gold)' }}>두 사람의 인연을 읽는 중...</p>
+            <div className="panel p-8 text-center">
+              <div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-[var(--line)] border-t-[var(--green)]" />
+              <p className="body-copy mt-4">두 사람의 관계 신호를 비교하는 중이에요.</p>
             </div>
           )}
 
-          {/* 에러 */}
           {phase === 'error' && (
-            <div className="card-dark p-5 text-center space-y-3">
-              <p className="text-sm text-red-400">오류가 발생했습니다. 다시 시도해주세요.</p>
-              <button onClick={handleFetchLight} className="text-xs underline" style={{ color: 'var(--gold)' }}>
-                재시도
+            <div className="panel p-5 text-center">
+              <p className="font-bold text-[var(--red)]">궁합 내용을 불러오지 못했어요.</p>
+              <button type="button" onClick={handleFetchCompatibility} className="btn-secondary mt-4 w-full">
+                다시 시도
               </button>
             </div>
           )}
 
-          {/* 결과 */}
           {phase === 'done' && result && (
             <div className="space-y-4">
-
-              {/* 총평 */}
               {visible >= 1 && (
-                <div className="card-dark p-5 text-center animate-fade-up" style={{
-                  animationFillMode: 'forwards',
-                  borderColor: 'rgba(201,168,76,0.35)',
-                  background: 'linear-gradient(135deg, rgba(201,168,76,0.06), rgba(13,13,26,1))',
-                }}>
-                  <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>{result.ohaengRelation}</p>
-                  <p className="text-xl font-bold gold-gradient">&ldquo;{result.summary}&rdquo;</p>
+                <div className="panel-strong p-5">
+                  <p className="section-label">{result.ohaengRelation}</p>
+                  <h2 className="title-tight mt-2">{result.summary}</h2>
                 </div>
               )}
 
-              {/* 라이트 섹션들 */}
-              {([
-                { icon: '🌱', title: '기질 궁합',   data: result.light.gijil },
-                { icon: '💬', title: '소통 궁합',   data: result.light.sothrough },
-                { icon: '✨', title: '이 관계의 강점', data: result.light.strength },
-              ] as const).map((s, i) =>
-                visible >= i + 2 ? (
-                  <div key={s.title} className="card-dark p-5 animate-fade-up" style={{ animationFillMode: 'forwards' }}>
-                    <div className="flex items-center gap-2 mb-2">
-                      <span>{s.icon}</span>
-                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{s.title}</span>
+              {lightSections.map(([key, title], index) => {
+                const section = result.light[key];
+                return visible >= index + 2 ? (
+                  <div key={key} className="panel p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="section-label">{title}</p>
+                      <span className="chip chip-green">근거 {index + 1}</span>
                     </div>
-                    <p className="text-base font-semibold mb-2" style={{ color: 'var(--gold)' }}>{s.data.headline}</p>
-                    <p className="text-sm leading-relaxed" style={{ color: 'var(--silver)' }}>{s.data.body}</p>
+                    <h3 className="mt-3 text-base font-black text-[var(--ink)]">{section.headline}</h3>
+                    <p className="body-copy mt-2">{section.body}</p>
                   </div>
-                ) : null
-              )}
+                ) : null;
+              })}
 
-              {/* 세 신 메시지 */}
               {visible >= 5 && (
-                <div className="card-dark p-5 text-center animate-fade-up" style={{
-                  animationFillMode: 'forwards',
-                  borderColor: 'rgba(201,168,76,0.3)',
-                }}>
-                  <div className="flex justify-center gap-2 mb-2 text-base">
-                    {CHAR_EMOJIS.map((e, i) => <span key={i}>{e}</span>)}
+                <div className="panel p-5">
+                  <p className="section-label">삼신 한마디</p>
+                  <p className="mt-3 text-lg font-black leading-snug text-[var(--ink)]">{result.light.samsinMessage}</p>
+                </div>
+              )}
+
+              {visible >= 6 && rel === 'romantic' && deepData && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="section-label">더 깊게 본 내용</p>
+                    <span className="chip chip-blue">포함됨</span>
                   </div>
-                  <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>세 신이 전하는 한 마디</p>
-                  <p className="text-base font-bold gold-gradient">&ldquo;{result.light.samsinMessage}&rdquo;</p>
-                </div>
-              )}
-
-              {/* 심층 궁합 (연인만) */}
-              {visible >= 6 && rel === 'romantic' && (
-                <div className="space-y-3 animate-fade-up" style={{ animationFillMode: 'forwards' }}>
-                  <p className="text-xs text-center tracking-widest" style={{ color: 'var(--text-muted)' }}>
-                    ── 심층 궁합 ──
-                  </p>
-
-                  {deepPhase === 'idle' && (
-                    <div className="card-dark p-5 text-center space-y-3"
-                      style={{ borderColor: 'rgba(201,168,76,0.2)' }}>
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                        감정의 흐름, 미래, 그리고 속궁합까지 세 신이 더 깊이 읽어드립니다
-                      </p>
-                      <button onClick={handleFetchDeep}
-                        className="w-full py-3 rounded-xl text-sm font-semibold transition-all hover:opacity-80"
-                        style={{ background: 'rgba(201,168,76,0.1)', border: '1px solid rgba(201,168,76,0.3)', color: '#c9a84c' }}>
-                        🍪 {DEEP_COST}개로 심층 궁합 보기
-                      </button>
-                    </div>
-                  )}
-
-                  {deepPhase === 'loading' && (
-                    <div className="card-dark p-6 text-center space-y-3">
-                      <div className="w-8 h-8 rounded-full border-2 mx-auto animate-spin"
-                        style={{ borderColor: 'rgba(201,168,76,0.3)', borderTopColor: '#c9a84c' }} />
-                      <p className="text-xs" style={{ color: 'var(--gold)' }}>깊은 인연을 읽는 중...</p>
-                    </div>
-                  )}
-
-                  {deepPhase === 'done' && deepData && (
-                    <div className="space-y-4">
-                      {([
-                        { icon: '💗', title: '감정의 결',      data: deepData.emotion },
-                        { icon: '🔮', title: '함께하는 미래',   data: deepData.longterm },
-                        { icon: '🌙', title: '속궁합',          data: deepData.sokgungham },
-                      ] as const).map(s => (
-                        <div key={s.title} className="card-dark p-5 animate-fade-up"
-                          style={{ animationFillMode: 'forwards', borderColor: 'rgba(201,168,76,0.2)' }}>
-                          <div className="flex items-center gap-2 mb-2">
-                            <span>{s.icon}</span>
-                            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{s.title}</span>
-                          </div>
-                          <p className="text-base font-semibold mb-2" style={{ color: 'var(--gold)' }}>{s.data.headline}</p>
-                          <p className="text-sm leading-relaxed" style={{ color: 'var(--silver)' }}>{s.data.body}</p>
-                        </div>
-                      ))}
-
-                      <div className="card-dark p-4 text-center"
-                        style={{ borderColor: 'rgba(201,168,76,0.25)', background: 'rgba(201,168,76,0.04)' }}>
-                        <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>두 사람에게 가장 좋은 시기</p>
-                        <p className="text-sm font-semibold" style={{ color: 'var(--gold)' }}>{deepData.bestTime}</p>
+                  {([
+                    ['emotion', '감정의 결'],
+                    ['longterm', '장기 흐름'],
+                    ['sokgungham', '친밀감 패턴'],
+                  ] as const).map(([key, title]) => {
+                    const section = deepData[key];
+                    return (
+                      <div key={key} className="panel p-5">
+                        <p className="section-label">{title}</p>
+                        <h3 className="mt-3 text-base font-black text-[var(--ink)]">{section.headline}</h3>
+                        <p className="body-copy mt-2">{section.body}</p>
                       </div>
-                    </div>
-                  )}
-
-                  {deepPhase === 'error' && (
-                    <div className="card-dark p-4 text-center space-y-2">
-                      <p className="text-xs text-red-400">오류가 발생했습니다.</p>
-                      <button onClick={handleFetchDeep} className="text-xs underline" style={{ color: 'var(--gold)' }}>재시도</button>
-                    </div>
-                  )}
+                    );
+                  })}
+                  <div className="panel-flat p-4">
+                    <p className="section-label">좋은 타이밍</p>
+                    <p className="mt-2 text-sm font-black text-[var(--ink)]">{deepData.bestTime}</p>
+                  </div>
                 </div>
               )}
 
-              {/* 다시 하기 */}
               {visible >= 6 && (
-                <button onClick={() => router.push('/')}
-                  className="w-full py-3 rounded-xl text-xs transition-all hover:opacity-60"
-                  style={{ color: 'var(--text-muted)' }}>
-                  ← 내 사주 보기
+                <button type="button" onClick={() => router.push('/')} className="btn-secondary w-full">
+                  내 사주 보기
                 </button>
               )}
+              {visible >= 6 && <SafetyNotice />}
             </div>
           )}
-        </div>
+        </section>
       </main>
 
-      {showShop && <CookieShopModal onClose={() => setShowShop(false)} />}
+      {showShop && <CookieShopModal onClose={closeShop} context={shopContext} onBought={handleShopBought} />}
+      <BottomNav active="compatibility" />
     </>
   );
 }

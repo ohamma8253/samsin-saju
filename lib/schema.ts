@@ -1,5 +1,26 @@
 import { z } from 'zod';
 
+const BooleanishSchema = z.preprocess(value => {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0 || value === undefined || value === null || value === '') return false;
+  if (typeof value === 'string') return ['1', 'true', 'yes', 'unknown'].includes(value.trim().toLowerCase());
+  return value;
+}, z.boolean());
+
+const SituationContextSchema = z.object({
+  mode: z.enum(['job_search', 'business', 'both']).optional(),
+  cashflowPressure: z.enum(['low', 'medium', 'high']).optional(),
+  runwayMonths: z.coerce.number().min(0).max(120).optional(),
+  projectStage: z.enum(['idea', 'prototype', 'paid_test', 'growth']).optional(),
+  mainQuestion: z.string().max(240).optional(),
+  currentConstraints: z.array(z.string().max(120)).max(12).optional(),
+  riskTolerance: z.enum(['low', 'medium', 'high']).optional(),
+  timeAvailablePerWeek: z.coerce.number().min(0).max(168).optional(),
+  incomeNeed: z.enum(['urgent', 'soon', 'stable']).optional(),
+  decisionDeadline: z.string().max(40).optional(),
+  preferredOutcome: z.string().max(160).optional(),
+}).optional();
+
 // ─── API 입력 검증 ───────────────────────────────────────────────────
 export const BirthParamsSchema = z.object({
   name: z.string().min(1).max(20),
@@ -9,7 +30,14 @@ export const BirthParamsSchema = z.object({
   hour: z.coerce.number().int().min(0).max(23).default(12),
   minute: z.coerce.number().int().min(0).max(59).default(0),
   gender: z.enum(['M', 'F']).default('M'),
+  calculationSex: z.enum(['male', 'female', 'unknown']).optional(),
+  displayGender: z.string().max(30).optional(),
+  unknownTime: BooleanishSchema.default(false),
+  birthTimePrecision: z.enum(['exact', 'range', 'unknown']).optional(),
+  analysisYear: z.coerce.number().int().min(1900).max(2200).optional(),
   city: z.string().default('seoul'),
+  concern: z.string().max(40).optional(),
+  situation: SituationContextSchema,
 });
 export type ValidatedBirthParams = z.infer<typeof BirthParamsSchema>;
 

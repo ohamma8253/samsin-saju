@@ -1,222 +1,199 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import StarsBg from '@/components/StarsBg';
-import CharacterBadge from '@/components/CharacterBadge';
-import { CITIES, DEFAULT_CITY } from '@/lib/cities';
+import BottomNav from '@/components/BottomNav';
+import SafetyNotice from '@/components/SafetyNotice';
+import SamsinCharacterCard, { SamsinAvatar } from '@/components/SamsinCharacterCard';
+import { trackEvent } from '@/lib/analytics';
+import { CONCERN_OPTIONS, type ConcernKey } from '@/lib/concerns';
+import { buildReportHrefFromProfile, readLocalSamsinProfile, type LocalSamsinProfile } from '@/lib/local-profile';
+import { FIRST_READING_COST, formatCookieValue } from '@/lib/pricing';
+import { buildAskHref, readReportContextSnapshots } from '@/lib/report-context';
+import { SAMSIN_CHARACTER_LIST } from '@/lib/samsin-characters';
 
-const CHARACTERS = [
-  { name: '청운', title: '사주팔자', emoji: '🌿', color: '#4ca87d' },
-  { name: '태을', title: '자미두수', emoji: '☁️', color: '#a78bfa' },
-  { name: '루나', title: '서양 점성술', emoji: '✦', color: '#c9a84c' },
-];
+const PRIMARY_CONCERNS = CONCERN_OPTIONS.slice(0, 6);
 
-const HOURS = [
-  { label: '시간 모름', value: '-1' },
-  { label: '자시 (23~01시)', value: '0' },
-  { label: '축시 (01~03시)', value: '2' },
-  { label: '인시 (03~05시)', value: '4' },
-  { label: '묘시 (05~07시)', value: '6' },
-  { label: '진시 (07~09시)', value: '8' },
-  { label: '사시 (09~11시)', value: '10' },
-  { label: '오시 (11~13시)', value: '12' },
-  { label: '미시 (13~15시)', value: '14' },
-  { label: '신시 (15~17시)', value: '16' },
-  { label: '유시 (17~19시)', value: '18' },
-  { label: '술시 (19~21시)', value: '20' },
-  { label: '해시 (21~23시)', value: '22' },
-];
+function todayLabel(date = new Date()) {
+  const weekdays = ['일', '월', '화', '수', '목', '금', '토'];
+  return `${date.getMonth() + 1}월 ${date.getDate()}일 (${weekdays[date.getDay()]})`;
+}
 
-export default function LandingPage() {
+export default function HomePage() {
   const router = useRouter();
-  const [name, setName] = useState('');
-  const [birthDate, setBirthDate] = useState('');
-  const [hour, setHour] = useState('-1');
-  const [gender, setGender] = useState<'M' | 'F'>('M');
-  const [city, setCity] = useState(DEFAULT_CITY);
-  const [error, setError] = useState('');
+  const [selectedConcern, setSelectedConcern] = useState<ConcernKey>('money_leak');
+  const [savedProfile, setSavedProfile] = useState<LocalSamsinProfile | null>(null);
+  const [latestReportHref, setLatestReportHref] = useState<string | undefined>();
+  const [latestAskHref, setLatestAskHref] = useState<string | undefined>();
+  const today = useMemo(() => todayLabel(), []);
+  const selectedLabel = CONCERN_OPTIONS.find(option => option.key === selectedConcern)?.label ?? '오늘 걸리는 일';
+  const hasSavedProfile = Boolean(savedProfile);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || !birthDate) {
-      setError('이름과 생년월일을 입력해주세요.');
+  useEffect(() => {
+    trackEvent('home_first_cta_viewed', {
+      default_concern: 'money_leak',
+    });
+  }, []);
+
+  useEffect(() => {
+    const syncSavedState = () => {
+      const profile = readLocalSamsinProfile();
+      const latestContext = readReportContextSnapshots()[0];
+      setSavedProfile(profile);
+      setLatestReportHref(latestContext?.reportUrl);
+      setLatestAskHref(latestContext ? buildAskHref(latestContext.reportId) : undefined);
+      if (profile?.concern) setSelectedConcern(profile.concern);
+    };
+
+    syncSavedState();
+    window.addEventListener('samsin-local-profile-change', syncSavedState);
+    window.addEventListener('samsin-report-context-change', syncSavedState);
+    window.addEventListener('samsin-archive-change', syncSavedState);
+    return () => {
+      window.removeEventListener('samsin-local-profile-change', syncSavedState);
+      window.removeEventListener('samsin-report-context-change', syncSavedState);
+      window.removeEventListener('samsin-archive-change', syncSavedState);
+    };
+  }, []);
+
+  const selectConcern = (concern: ConcernKey) => {
+    setSelectedConcern(concern);
+    trackEvent('concern_selected', {
+      concern,
+      surface: 'home',
+    });
+  };
+
+  const startConcern = () => {
+    trackEvent('concern_selected', {
+      concern: selectedConcern,
+      surface: 'home_cta',
+    });
+    if (savedProfile) {
+      router.push(buildReportHrefFromProfile(savedProfile, selectedConcern));
       return;
     }
-    setError('');
+    router.push(`/start?concern=${encodeURIComponent(selectedConcern)}`);
+  };
 
-    const [year, month, day] = birthDate.split('-').map(Number);
-    const hourNum = Number(hour);
-
-    const params = new URLSearchParams({
-      name: name.trim(),
-      year: String(year),
-      month: String(month),
-      day: String(day),
-      hour: hourNum < 0 ? '12' : String(hourNum),
-      minute: '0',
-      gender,
-      city,
+  const openSavedToday = () => {
+    if (!savedProfile) {
+      startConcern();
+      return;
+    }
+    trackEvent('concern_selected', {
+      concern: selectedConcern,
+      surface: 'home_saved_profile',
     });
-
-    router.push(`/report?${params.toString()}`);
+    router.push(buildReportHrefFromProfile(savedProfile, selectedConcern));
   };
 
   return (
-    <main className="relative min-h-screen flex flex-col items-center justify-center px-4 py-16">
-      <StarsBg />
-
-      <div className="relative z-10 w-full max-w-md">
-        {/* 헤더 */}
-        <div className="text-center mb-10">
-          <div className="flex justify-center gap-8 mb-7 animate-fade-up">
-            {CHARACTERS.map(c => (
-              <CharacterBadge key={c.name} {...c} size="md" />
-            ))}
-          </div>
-
-          <h1 className="text-4xl font-bold tracking-widest mb-1 gold-gradient">
-            삼신사주
-          </h1>
-          <p className="text-xs tracking-widest mb-3" style={{ color: 'var(--text-muted)' }}>
-            三神四柱
-          </p>
-          <p className="text-sm leading-relaxed" style={{ color: 'var(--silver)' }}>
-            청운·태을·루나가 세 가지 천명서로<br />
-            당신의 운명을 읽습니다
-          </p>
-        </div>
-
-        {/* 입력 폼 */}
-        <form onSubmit={handleSubmit} className="card-dark p-6 space-y-5">
-          {/* 이름 */}
+    <main className="min-h-screen pb-24">
+      <div className="mobile-shell space-y-4">
+        <header className="brand-header">
           <div>
-            <label className="block text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
-              이름 또는 닉네임
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="홍길동"
-              maxLength={10}
-              className="w-full px-4 py-3 rounded-xl text-sm outline-none transition-all focus:border-yellow-600"
-              style={{
-                background: 'rgba(255,255,255,0.04)',
-                border: '1px solid rgba(201,168,76,0.2)',
-                color: 'var(--text-primary)',
-              }}
-            />
+            <p className="section-label">Samsin Saju</p>
+            <h1 className="brand-wordmark">삼신사주</h1>
+            <p className="brand-tagline">돈과 일의 불안을 세 관점으로 번역합니다</p>
           </div>
+          <span className="chip chip-gold">첫 리포트 {formatCookieValue(FIRST_READING_COST)}</span>
+        </header>
 
-          {/* 성별 */}
-          <div>
-            <label className="block text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
-              성별
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              {(['M', 'F'] as const).map(g => (
-                <button
-                  key={g}
-                  type="button"
-                  onClick={() => setGender(g)}
-                  className="py-3 rounded-xl text-sm font-medium transition-all"
-                  style={{
-                    background: gender === g ? 'rgba(201,168,76,0.12)' : 'rgba(255,255,255,0.03)',
-                    border: `1px solid ${gender === g ? 'rgba(201,168,76,0.45)' : 'rgba(201,168,76,0.12)'}`,
-                    color: gender === g ? '#c9a84c' : 'var(--text-muted)',
-                  }}
-                >
-                  {g === 'M' ? '남성' : '여성'}
-                </button>
+        <section className="hero-panel">
+          <div className="hero-band">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-black text-[var(--ink)]">{today}</p>
+              <span className="chip chip-green">오늘 기준부터</span>
+            </div>
+            <div className="hero-character-strip mt-3">
+              {SAMSIN_CHARACTER_LIST.map(character => (
+                <div key={character.key} className="hero-character-pill">
+                  <SamsinAvatar character={character} size="md" />
+                  <p className="mt-2 text-xs font-black" style={{ color: character.color }}>
+                    {character.name}
+                  </p>
+                  <p className="mt-0.5 text-[10px] font-bold text-[var(--muted)]">{character.archetype}</p>
+                </div>
               ))}
             </div>
           </div>
 
-          {/* 생년월일 */}
-          <div>
-            <label className="block text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
-              생년월일
-            </label>
-            <input
-              type="date"
-              value={birthDate}
-              onChange={e => setBirthDate(e.target.value)}
-              min="1920-01-01"
-              max="2010-12-31"
-              className="w-full px-4 py-3 rounded-xl text-sm outline-none"
-              style={{
-                background: 'rgba(255,255,255,0.04)',
-                border: '1px solid rgba(201,168,76,0.2)',
-                color: 'var(--text-primary)',
-                colorScheme: 'dark',
-              }}
-            />
-          </div>
+          <div className="p-5">
+            <p className="section-label">오늘의 삼신 회의</p>
+            <h2 className="mt-2 text-[32px] font-black leading-tight">
+              오늘 뭐가 제일
+              <br />
+              마음에 걸려요?
+            </h2>
+            <p className="body-copy mt-4">
+              청운은 돈의 기준을, 태을은 일의 자리를, 루나는 지금의 압박과 리듬을 봐요.
+            </p>
 
-          {/* 출생시간 */}
-          <div>
-            <label className="block text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
-              출생시간
-              <span className="ml-1" style={{ fontSize: '10px' }}>(모를 경우 건너뛰기)</span>
-            </label>
-            <select
-              value={hour}
-              onChange={e => setHour(e.target.value)}
-              className="w-full px-4 py-3 rounded-xl text-sm outline-none"
-              style={{
-                background: 'rgba(13,13,26,0.95)',
-                border: '1px solid rgba(201,168,76,0.2)',
-                color: 'var(--text-primary)',
-              }}
-            >
-              {HOURS.map(h => (
-                <option key={h.value} value={h.value}>{h.label}</option>
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              {PRIMARY_CONCERNS.map(option => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => selectConcern(option.key)}
+                  className={`concern-card ${selectedConcern === option.key ? 'concern-card-active' : ''}`}
+                >
+                  {option.label}
+                </button>
               ))}
-            </select>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-[var(--line)] bg-[var(--surface-2)] p-3">
+              <p className="text-xs font-black text-[var(--green)]">고른 고민</p>
+              <p className="mt-1 text-lg font-black text-[var(--ink)]">{selectedLabel}</p>
+              <p className="muted-copy mt-1">
+                다음 화면에서 세 신이 이 고민을 어떻게 나눠 볼지 먼저 말하고, 그 다음 생년월일을 입력해요.
+              </p>
+            </div>
+
+            <button type="button" onClick={hasSavedProfile ? openSavedToday : startConcern} className="btn-primary mt-4 w-full">
+              오늘 걸리는 것 고르기
+            </button>
           </div>
+        </section>
 
-          {/* 출생 지역 */}
-          <div>
-            <label className="block text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
-              출생 지역
-            </label>
-            <select
-              value={city}
-              onChange={e => setCity(e.target.value)}
-              className="w-full px-4 py-3 rounded-xl text-sm outline-none"
-              style={{
-                background: 'rgba(13,13,26,0.95)',
-                border: '1px solid rgba(201,168,76,0.2)',
-                color: 'var(--text-primary)',
-              }}
-            >
-              {Object.entries(CITIES).map(([key, c]) => (
-                <option key={key} value={key}>{c.name}</option>
-              ))}
-            </select>
+        <section className="space-y-3">
+          <div className="px-1">
+            <p className="section-label">세 관점</p>
+            <h2 className="title-tight mt-1">같은 고민도 맡는 역할이 달라요</h2>
           </div>
+          <div className="samsin-character-rail" aria-label="삼신 세 관점 캐릭터">
+            {SAMSIN_CHARACTER_LIST.map(character => (
+              <article key={character.key} className={`samsin-rail-card samsin-rail-card-${character.key}`}>
+                <div className="samsin-rail-portrait-shell" aria-hidden="true">
+                  <span className="samsin-rail-aura" />
+                  <SamsinAvatar character={character} size="md" className="samsin-rail-portrait" />
+                </div>
+                <div className="min-w-0">
+                  <p className="samsin-rail-name">{character.name}</p>
+                  <p className="samsin-rail-role">{character.archetype.replace('의 신', '')}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
 
-          {error && (
-            <p className="text-xs text-red-400 text-center">{error}</p>
-          )}
+        <section className="space-y-3">
+          {SAMSIN_CHARACTER_LIST.map(character => (
+            <SamsinCharacterCard key={character.key} character={character}>
+              <div className="flex flex-wrap gap-2">
+                <span className="chip">{character.method}</span>
+                <span className="chip">{character.visualCue}</span>
+              </div>
+              <p className="muted-copy mt-3">{character.lens}</p>
+            </SamsinCharacterCard>
+          ))}
+        </section>
 
-          <button
-            type="submit"
-            className="w-full py-4 rounded-xl text-sm font-bold tracking-widest transition-all hover:opacity-90 active:scale-95"
-            style={{
-              background: 'linear-gradient(135deg, #b8933e, #e8c97a, #b8933e)',
-              color: '#06060f',
-            }}
-          >
-            천명서 펼치기
-          </button>
-        </form>
-
-        <p className="text-center text-xs mt-4" style={{ color: 'var(--text-muted)' }}>
-          첫 방문 시 쿠키 7개 무료 지급
-        </p>
+        <SafetyNotice />
       </div>
+
+      <BottomNav active="today" reportHref={latestReportHref} askHref={latestAskHref} />
     </main>
   );
 }
